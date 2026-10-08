@@ -21,7 +21,9 @@ A trigger starts a pass through a sequence of time bins. Event pulses are counte
 | Usability | Count-rate history, elapsed/remaining-time display, clock calibration, themes, layout controls, and keyboard shortcuts |
 | Built-in stimulus | Teensy PWM self-test: nominal 500 Hz trigger and 10 kHz event signal |
 
-The input sampler runs at **300 MHz**. This is distinct from the **100 MHz histogram clock**: minimum bin width is **30 ns**, not 3.33 ns. Sampling frequency is not a guaranteed maximum count rate.
+The input sampler runs at **300 MHz**. This is distinct from the **100 MHz histogram clock**: minimum bin width is **30 ns**. Sampling frequency is not a guaranteed maximum count rate.
+
+Much of the codes were generated using ChatGPT 5.6 Sol. 
 
 ## Get started
 

@@ -1,0 +1,59 @@
+// Tang Primer 25K Dock, GW5A-LV25MG121NC1/I0.
+IO_LOC  "clk_50m" E2;
+IO_PORT "clk_50m" IO_TYPE=LVCMOS33 PULL_MODE=NONE;
+IO_LOC  "trigger_in" H2;
+IO_PORT "trigger_in" IO_TYPE=LVCMOS33 PULL_MODE=DOWN;
+IO_LOC  "event_in" H4;
+IO_PORT "event_in" IO_TYPE=LVCMOS33 PULL_MODE=DOWN;
+IO_LOC  "uart_rx" L11;
+IO_PORT "uart_rx" IO_TYPE=LVCMOS33 PULL_MODE=UP;
+IO_LOC  "uart_tx" E10;
+IO_PORT "uart_tx" IO_TYPE=LVCMOS33 PULL_MODE=UP DRIVE=4;
+IO_LOC  "led0_n" L6;
+IO_PORT "led0_n" IO_TYPE=LVCMOS33 PULL_MODE=UP DRIVE=8;
+IO_LOC  "led1_n" A11;
+IO_PORT "led1_n" IO_TYPE=LVCMOS33 PULL_MODE=UP DRIVE=8;
+IO_LOC  "pass_toggle_out" K5;
+IO_PORT "pass_toggle_out" IO_TYPE=LVCMOS33 PULL_MODE=NONE DRIVE=4;
+IO_LOC  "accept_enable_in" A10;
+IO_PORT "accept_enable_in" IO_TYPE=LVCMOS33 PULL_MODE=DOWN;
+IO_LOC  "stop_request_in" C10;
+IO_PORT "stop_request_in" IO_TYPE=LVCMOS33 PULL_MODE=DOWN;
+IO_LOC  "stop_ack_out" B10;
+IO_PORT "stop_ack_out" IO_TYPE=LVCMOS33 PULL_MODE=NONE DRIVE=4;
+
+// -------------------------------------------------------------------------
+// Matched H4-event / H2-trigger acquisition front-end placement.
+//
+// H4 and H2 use adjacent I/O blocks on this package. The first routed V7
+// implementation naturally placed event_sync_300 at R35C86 and
+// trigger_sync_300 at R35C87. Preserve that geometry, then place every later
+// stage as a mirrored pair in the same row and neighboring columns. This makes
+// the two logical paths reproducible and keeps their fabric distance nearly
+// identical. Do not constrain event_meta_300/trigger_meta_300: those first
+// metastability-catching registers remain associated with their respective
+// input I/O blocks.
+
+INS_LOC "event_sync_300_s1"       R35C86[0][A];
+INS_LOC "trigger_sync_300_s1"     R35C87[0][A];
+
+INS_LOC "event_shift_300_0_s1"    R34C86[0][A];
+INS_LOC "trigger_shift_300_0_s1"  R34C87[0][A];
+INS_LOC "event_shift_300_1_s1"    R34C86[0][B];
+INS_LOC "trigger_shift_300_1_s1"  R34C87[0][B];
+INS_LOC "event_shift_300_2_s1"    R33C86[0][A];
+INS_LOC "trigger_shift_300_2_s1"  R33C87[0][A];
+
+INS_LOC "event_tuple_half_0_s1"   R32C86[0][A];
+INS_LOC "trigger_tuple_half_0_s1" R32C87[0][A];
+INS_LOC "event_tuple_half_1_s1"   R32C86[0][B];
+INS_LOC "trigger_tuple_half_1_s1" R32C87[0][B];
+INS_LOC "event_tuple_half_2_s1"   R31C86[0][A];
+INS_LOC "trigger_tuple_half_2_s1" R31C87[0][A];
+
+INS_LOC "event_sample_0_s1"       R30C86[0][A];
+INS_LOC "trigger_sample_0_s1"     R30C87[0][A];
+INS_LOC "event_sample_1_s1"       R30C86[0][B];
+INS_LOC "trigger_sample_1_s1"     R30C87[0][B];
+INS_LOC "event_sample_2_s1"       R29C86[0][A];
+INS_LOC "trigger_sample_2_s1"     R29C87[0][A];

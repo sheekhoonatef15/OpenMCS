@@ -25,13 +25,13 @@ The input sampler runs at **300 MHz**. This is distinct from the **100 MHz histo
 
 ## Get started
 
-1. Assemble the connections in [Hardware and wiring](OpenMCS_V1/docs/HARDWARE.md).
-2. Program the FPGA and Teensy using [Build and installation](OpenMCS_V1/docs/BUILD.md).
+1. Assemble the connections in [Hardware and wiring](OpenMCS_V1/OpenMCS/docs/HARDWARE.md).
+2. Program the FPGA and Teensy using [Build and installation](OpenMCS_V1/OpenMCS/docs/BUILD.md).
 3. Install Python 3.10+ and start the application from the repository root:
 
    ```sh
-   python -m pip install -r OpenMCS_V1/OpenMCS_V1/Software/requirements.txt
-   python OpenMCS_V1/OpenMCS_V1/Software/OpenMCS_GUI.py
+   python -m pip install -r OpenMCS_V1/OpenMCS_V1/OpenMCS/Software/requirements.txt
+   python OpenMCS_V1/OpenMCS_V1/OpenMCS/Software/OpenMCS_GUI.py
    ```
 
 4. Select the **Teensy USB serial port** and click **Connect**.
@@ -39,16 +39,16 @@ The input sampler runs at **300 MHz**. This is distinct from the **100 MHz histo
 6. Use **Run internal** with Teensy pin 8 connected to the trigger input, or **Run external** with an external trigger source.
 7. Click **Stop**, wait for the completed final histogram, then save the data.
 
-On Windows, `OpenMCS_V1/OpenMCS_V1/Software/Run_OpenMCS.bat` can launch the GUI after dependencies are installed.
+On Windows, `OpenMCS_V1/OpenMCS_V1/OpenMCS/Software/Run_OpenMCS.bat` can launch the GUI after dependencies are installed.
 
 **Changing bins or dwell preserves existing histogram memory and the accumulated pass count.** Clear accumulation explicitly before starting a new measurement with different timing. Otherwise counts acquired under different settings are mixed.
 
 ## Documentation
 
-- [Hardware and wiring](OpenMCS_V1/docs/HARDWARE.md): every acquisition/control connection, Dock connector positions, buffer wiring, and external/internal source selection.
-- [Build and installation](OpenMCS_V1/docs/BUILD.md): FPGA build settings, programming, Teensy upload, and Python setup.
-- [Operation and features](OpenMCS_V1/docs/OPERATION.md): acquisition workflow, self-test, analysis, export, and troubleshooting.
-- [Verification and example data](OpenMCS_V1/docs/VERIFICATION.md): integrity checks, sample measurement, and offline peak analysis.
+- [Hardware and wiring](OpenMCS_V1/OpenMCS/docs/HARDWARE.md): every acquisition/control connection, Dock connector positions, buffer wiring, and external/internal source selection.
+- [Build and installation](OpenMCS_V1/OpenMCS/docs/BUILD.md): FPGA build settings, programming, Teensy upload, and Python setup.
+- [Operation and features](OpenMCS_V1/OpenMCS/docs/OPERATION.md): acquisition workflow, self-test, analysis, export, and troubleshooting.
+- [Verification and example data](OpenMCS_V1/OpenMCS/docs/VERIFICATION.md): integrity checks, sample measurement, and offline peak analysis.
 
 ## Repository contents
 
@@ -64,5 +64,6 @@ On Windows, `OpenMCS_V1/OpenMCS_V1/Software/Run_OpenMCS.bat` can launch the GUI 
 | `Verification/` | Example CSV/PNG, Mathematica notebook, Python analysis, and integrity checker |
 
 The repository includes source code and prebuilt FPGA programming images. Build instructions and hardware verification procedures are provided in the guides above.
+
 
 

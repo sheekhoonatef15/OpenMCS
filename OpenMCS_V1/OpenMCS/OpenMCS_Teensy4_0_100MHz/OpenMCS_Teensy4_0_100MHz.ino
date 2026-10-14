@@ -2,6 +2,11 @@
 // OpenMCS Teensy controller for the original full-feature GUI and the
 // CHAMPION_100MHz cumulative FPGA.  GUI appearance/features stay unchanged.
 static constexpr uint32_t FPGA_BAUD=5000000;
+// 8192 extra bytes absorb about 16.4 ms at 5 Mbaud (8N1).
+// This is burst tolerance, not flow control for an indefinitely stalled PC.
+static uint8_t fpga_rx_extra[8192];
+static uint8_t usb_forward_buffer[256];
+static size_t usb_forward_size=0, usb_forward_offset=0;
 static inline uint32_t cpuHz() { return (uint32_t)F_CPU_ACTUAL; }
 static constexpr int TRIGGER_PIN=8, EVENT_PIN=9, PASS_TOGGLE_PIN=13;
 static constexpr int ACCEPT_ENABLE_PIN=16, STOP_REQUEST_PIN=22, STOP_ACK_PIN=23;
@@ -45,14 +50,37 @@ static uint8_t crc8_next(uint8_t c,uint8_t d){c^=d;for(int i=0;i<8;i++)c=(c&0x80
 static void cfg5(uint16_t bins,uint32_t dwell){uint8_t p[11]={'C','F','G','5',uint8_t(bins),uint8_t(bins>>8),uint8_t(dwell),uint8_t(dwell>>8),uint8_t(dwell>>16),uint8_t(dwell>>24),0};uint8_t c=0;for(int i=0;i<10;i++)c=crc8_next(c,p[i]);p[10]=c;Serial3.write(p,11);}
 static void sendPassLimit(uint32_t limit){uint8_t p[5]={'L',uint8_t(limit),uint8_t(limit>>8),uint8_t(limit>>16),uint8_t(limit>>24)};Serial3.write(p,5);}
 static inline void forwardFpga(){
-  uint16_t budget=64;
-  while(budget-- && Serial3.available() && Serial.availableForWrite()){
-    uint8_t b=Serial3.read();
-    Serial.write(&b,1);
-    fpga_stream_active=true;
-    fpga_last_byte_us=micros();
+  // Bound work per call so hardware controls/internal triggers remain serviced.
+  // Hold a short USB write for the next call; never consume/reorder those bytes.
+  if(usb_forward_offset==usb_forward_size){
+    usb_forward_offset=usb_forward_size=0;
+    int ready=Serial3.available();
+    int capacity=Serial.availableForWrite();
+    size_t count=ready>0 ? (size_t)ready : 0;
+    if(capacity<=0) count=0;
+    else if(count>(size_t)capacity) count=(size_t)capacity;
+    if(count>sizeof(usb_forward_buffer)) count=sizeof(usb_forward_buffer);
+    for(size_t i=0;i<count;i++){
+      int value=Serial3.read();
+      if(value<0) break;
+      usb_forward_buffer[usb_forward_size++]=(uint8_t)value;
+    }
+    if(usb_forward_size){
+      fpga_stream_active=true;
+      fpga_last_byte_us=micros();
+    }
   }
-  if(fpga_stream_active && !Serial3.available() &&
+  if(usb_forward_offset<usb_forward_size){
+    int capacity=Serial.availableForWrite();
+    size_t count=usb_forward_size-usb_forward_offset;
+    if(capacity>0){
+      if(count>(size_t)capacity) count=(size_t)capacity;
+      usb_forward_offset+=Serial.write(usb_forward_buffer+usb_forward_offset,count);
+      fpga_last_byte_us=micros();
+    }
+  }
+  if(fpga_stream_active && usb_forward_offset==usb_forward_size &&
+     !Serial3.available() &&
      (uint32_t)(micros()-fpga_last_byte_us)>=FPGA_STREAM_QUIET_US){
     fpga_stream_active=false;
   }
@@ -76,18 +104,8 @@ static void prepareSelfTestTiming(){
     st_offset_cycles[n]=(uint32_t)((corrected>1)?corrected:1);
   }
 }
-static void beginSelfTestTrain(){
-  const uint32_t pulse_cycles=cyclesFromNsCeil(SELFTEST_PULSE_NS);
-  noInterrupts();
-  digitalWriteFast(TRIGGER_PIN,HIGH);
-  st_t0=ARM_DWT_CYCCNT;
-  waitUntilCycle(st_t0+pulse_cycles);
-  digitalWriteFast(TRIGGER_PIN,LOW);
-  waitUntilCycle(st_t0+st_offset_cycles[1]);
-  pulseCycles(EVENT_PIN,pulse_cycles);
-  st_n=2;
-  interrupts();
-}
+
+
 static void stopHardware(){
   internal_trigger=false;
   external_mode=false;
@@ -201,7 +219,7 @@ static void serviceSelfTest(){
 }
 void setup(){ARM_DEMCR|=ARM_DEMCR_TRCENA;ARM_DWT_CTRL|=ARM_DWT_CTRL_CYCCNTENA;prepareSelfTestTiming();pinMode(TRIGGER_PIN,OUTPUT);pinMode(EVENT_PIN,OUTPUT);pinMode(PASS_TOGGLE_PIN,INPUT);
 attachInterrupt(digitalPinToInterrupt(PASS_TOGGLE_PIN),passAcceptedISR,CHANGE);
-pinMode(ACCEPT_ENABLE_PIN,OUTPUT);pinMode(STOP_REQUEST_PIN,OUTPUT);pinMode(STOP_ACK_PIN,INPUT);digitalWriteFast(TRIGGER_PIN,LOW);digitalWriteFast(EVENT_PIN,LOW);digitalWriteFast(ACCEPT_ENABLE_PIN,LOW);digitalWriteFast(STOP_REQUEST_PIN,LOW);analogWriteResolution(PWM_RESOLUTION_BITS);Serial.begin(115200);Serial3.begin(FPGA_BAUD);}
+pinMode(ACCEPT_ENABLE_PIN,OUTPUT);pinMode(STOP_REQUEST_PIN,OUTPUT);pinMode(STOP_ACK_PIN,INPUT);digitalWriteFast(TRIGGER_PIN,LOW);digitalWriteFast(EVENT_PIN,LOW);digitalWriteFast(ACCEPT_ENABLE_PIN,LOW);digitalWriteFast(STOP_REQUEST_PIN,LOW);analogWriteResolution(PWM_RESOLUTION_BITS);Serial.begin(115200);Serial3.begin(FPGA_BAUD);Serial3.addMemoryForRead(fpga_rx_extra,sizeof(fpga_rx_extra));}
 void loop(){
   serviceSelfTest();
   forwardFpga();

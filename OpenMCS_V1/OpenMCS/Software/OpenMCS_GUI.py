@@ -21,6 +21,10 @@ import time
 from dataclasses import dataclass
 
 import numpy as np
+from OpenMCS_protocol import (
+    FrameParser, MCS_MAGIC, LIVE_BLOCK_MAGIC, MCS_TRAILER,
+    MAX_BINS, MIN_DWELL_CYCLES, EXPECTED_CLOCK_HZ,
+)
 import serial
 import serial.tools.list_ports
 
@@ -39,19 +43,13 @@ from PyQt6.QtWidgets import (
 )
 
 APP_NAME = "OpenMCS"
-APP_VERSION = "8.0.5-linear-fit-cps"
+APP_VERSION = "8.0.6-performance"
 USB_BAUD = 115_200
-MCS_MAGIC = b"MCS6"
-LIVE_BLOCK_MAGIC = b"MCB1"
 # All released V3/V4 sketches in this project use the same line protocol.
 # Match the stable family prefix so the maximum-accuracy V4 sketch connects.
 TEENSY_ID = b"OPENMCS_TEENSY4_V"
 STATUS_MAGIC = b"@@OPENMCS:"
-MCS_TRAILER = b"DONE"
-MAX_BINS = 16_384
 DEFAULT_BINS = 10_000
-MIN_DWELL_CYCLES = 3
-EXPECTED_CLOCK_HZ = 100_000_000
 MAX_MCS_DWELL_S = 0.001       # 1 ms/bin
 MAX_MCS_PASS_SPAN_S = 20.0    # supports 16,384 bins at 1 ms/bin
 BG = "#0b1016"
@@ -127,7 +125,11 @@ def linear_fit_active_rate(samples, pass_active_s):
 
 
 def histogram_step_xy(x_values, counts):
-    """Return explicit bin-edge staircase coordinates for MCS histogram display."""
+    """Return staircase coordinates when x_values are LEFT EDGES of MCS bins.
+
+    OpenMCS bin i spans [x[i], x[i] + dx].  For example, with a
+    100 ns dwell: bin 0 = 0..100 ns, bin 1 = 100..200 ns, etc.
+    """
     x = np.asarray(x_values, dtype=np.float64)
     y = np.asarray(counts)
     n = min(x.size, y.size)
@@ -135,117 +137,25 @@ def histogram_step_xy(x_values, counts):
         return np.asarray([], dtype=np.float64), np.asarray([], dtype=np.float64)
     x = x[:n]
     y = y[:n]
+
     if n == 1:
-        # With one point there is no measured neighbour spacing; use a unit-width
-        # visual bin. Normal MCS operation has many bins, so this is only a safe fallback.
-        half = 0.5
-        edges = np.asarray([x[0] - half, x[0] + half], dtype=np.float64)
+        # Safe fallback. Normal MCS displays contain multiple bins.
+        dx = 1.0
     else:
-        mids = 0.5 * (x[:-1] + x[1:])
-        edges = np.empty(n + 1, dtype=np.float64)
-        edges[1:-1] = mids
-        edges[0] = x[0] - 0.5 * (x[1] - x[0])
-        edges[-1] = x[-1] + 0.5 * (x[-1] - x[-2])
-    # Explicit staircase: horizontal top across each bin and vertical transitions.
+        dx = float(x[-1] - x[-2])
+        if not math.isfinite(dx) or dx <= 0.0:
+            dx = 1.0
+
+    # x[i] is the LEFT edge, not the center.  Append the right edge of
+    # the final bin, then construct the explicit histogram staircase.
+    edges = np.empty(n + 1, dtype=np.float64)
+    edges[:-1] = x
+    edges[-1] = x[-1] + dx
     sx = np.repeat(edges, 2)[1:-1]
     sy = np.repeat(y.astype(np.float64, copy=False), 2)
     return sx, sy
 
 
-class FrameParser:
-    """Incremental parser for complete MCS6 and committed-range MCB1 frames."""
-
-    def __init__(self):
-        self.buffer = bytearray()
-        self.discarded_bytes = 0
-        self.invalid_frames = 0
-
-    def feed(self, data):
-        self.buffer.extend(data)
-        frames = []
-        while True:
-            candidates = [
-                index for index in (
-                    self.buffer.find(MCS_MAGIC),
-                    self.buffer.find(LIVE_BLOCK_MAGIC),
-                ) if index >= 0
-            ]
-            magic_index = min(candidates) if candidates else -1
-            if magic_index < 0:
-                preserve = len(MCS_MAGIC) - 1
-                if len(self.buffer) > preserve:
-                    removed = len(self.buffer) - preserve
-                    del self.buffer[:removed]
-                    self.discarded_bytes += removed
-                break
-            if magic_index:
-                del self.buffer[:magic_index]
-                self.discarded_bytes += magic_index
-            live_block = bytes(self.buffer[:4]) == LIVE_BLOCK_MAGIC
-            header_length = 23 if live_block else 19
-            if len(self.buffer) < header_length:
-                break
-            if live_block:
-                (bin_count, block_start, block_count, dwell_cycles,
-                 clock_hz, pass_count, flags) = struct.unpack_from(
-                    "<HHHIIIB", self.buffer, 4
-                )
-                geometry_ok = (
-                    1 <= bin_count <= MAX_BINS
-                    and 1 <= block_count <= bin_count
-                    and block_start < bin_count
-                    and block_start + block_count <= bin_count
-                )
-                transmitted_words = block_count
-            else:
-                bin_count, dwell_cycles, clock_hz, pass_count, flags = struct.unpack_from(
-                    "<HIIIB", self.buffer, 4
-                )
-                block_start = 0
-                block_count = bin_count
-                transmitted_words = bin_count
-                geometry_ok = 1 <= bin_count <= MAX_BINS
-            if not (geometry_ok and dwell_cycles >= MIN_DWELL_CYCLES
-                    and clock_hz == EXPECTED_CLOCK_HZ):
-                del self.buffer[0]
-                self.invalid_frames += 1
-                continue
-            counts_offset = header_length
-            total_offset = counts_offset + transmitted_words * 4
-            trailer_offset = total_offset + 8
-            frame_length = trailer_offset + 4
-            if len(self.buffer) < frame_length:
-                break
-            if bytes(self.buffer[trailer_offset:frame_length]) != MCS_TRAILER:
-                del self.buffer[0]
-                self.invalid_frames += 1
-                continue
-            counts = np.frombuffer(
-                bytes(self.buffer[counts_offset:total_offset]), dtype="<u4"
-            ).copy()
-            reported_total = struct.unpack_from("<Q", self.buffer, total_offset)[0]
-            computed_total = int(counts.sum(dtype=np.uint64))
-            del self.buffer[:frame_length]
-            frames.append((counts, {
-                "bin_count": bin_count,
-                "dwell_cycles": dwell_cycles,
-                "clock_hz": clock_hz,
-                "pass_count": pass_count,
-                "flags": flags,
-                "accumulator_overflow": bool(flags & 0x01),
-                "fifo_overflow": bool(flags & 0x02),
-                "counter_frame": bool((not live_block) and (flags & 0x04)),
-                "trigger_queue_overflow": bool((not live_block) and (flags & 0x08)),
-                "atomic_final": bool((not live_block) and (flags & 0x10)),
-                "live_stream_overflow": bool(live_block and (flags & 0x04)),
-                "live_block": live_block,
-                "block_start": block_start,
-                "block_count": block_count,
-                "reported_total": reported_total,
-                "computed_total": computed_total,
-                "total_ok": reported_total == computed_total,
-            }))
-        return frames
 
 
 def available_ports():
@@ -565,6 +475,12 @@ class OpenMCSWindow(QMainWindow):
         super().__init__()
         self.settings = QSettings("OpenMCS", "OpenMCS")
         self.worker = None
+        self._live_preview_metadata = None
+        self._live_preview_warning = False
+        self.live_preview_timer = QTimer(self)
+        self.live_preview_timer.setSingleShot(True)
+        self.live_preview_timer.setInterval(33)
+        self.live_preview_timer.timeout.connect(self._render_live_preview)
         self.latest_counts = None
         self.latest_metadata = None
         self.mcs_latest_counts = None
@@ -697,7 +613,7 @@ class OpenMCSWindow(QMainWindow):
         self.app_title_label.setObjectName("CompactTitle" if os.environ.get("OPENQMA_EMBEDDED") else "AppTitle")
         self.app_subtitle_label = QLabel(
             "Triggered multichannel scaler · 100 MHz FPGA accumulation · "
-            "GUI v6.7 DUAL AXIS"
+            "GUI v6.7"
         )
         self.app_subtitle_label.setObjectName("AppSubtitle")
         self.app_subtitle_label.setWordWrap(True)
@@ -2617,29 +2533,41 @@ class OpenMCSWindow(QMainWindow):
         requested_signature = (
             self.bins_spin.value(), self._requested_dwell_cycles()
         )
-        if self.configured_signature != requested_signature:
-            self._show_status(
-                "Apply the displayed MCS configuration before starting",
-                "warning",
-            )
-            return
-        if self.send(f"f {frequency}"):
-            max_passes = 0 if self.unlimited_passes_check.isChecked() else self.max_passes_spin.value()
+        max_passes = 0 if self.unlimited_passes_check.isChecked() else self.max_passes_spin.value()
+        baseline_passes = int(self.accumulation_frames)
+
+        def finish_mcs_internal_start():
+            if self.instrument_mode != "mcs" or self.worker is None:
+                return
+            self.send(f"f {frequency}")
             self.send(f"m {max_passes}")
-            self.send("r")
-            self.acquisition_running = True
-            # Max passes is an absolute FPGA histogram target. A restart resumes
-            # from the committed pass count and waits for the next trigger.
-            baseline_passes = int(self.accumulation_frames)
-            self._begin_acquisition_timing(
-                None if max_passes == 0 else max_passes,
-                baseline_passes=baseline_passes
-            )
-            limit_text = "continuous" if max_passes == 0 else f"target {max_passes:,} total passes"
-            self._show_status(
-                f"Internal trigger running at {frequency:,} Hz · {limit_text}",
-                "success"
-            )
+            if self.send("r"):
+                self.acquisition_running = True
+                self._begin_acquisition_timing(
+                    None if max_passes == 0 else max_passes,
+                    baseline_passes=baseline_passes
+                )
+                limit_text = "continuous" if max_passes == 0 else f"target {max_passes:,} total passes"
+                self._show_status(
+                    f"Internal trigger running at {frequency:,} Hz · {limit_text} · "
+                    f"{self.bins_spin.value():,} bins × {self._requested_dwell_cycles():,} clocks",
+                    "success"
+                )
+
+        # ALWAYS program the geometry shown in Setup before every MCS Start.
+        # Do not trust configured_signature here: it is GUI state and cannot prove
+        # what geometry is currently active inside the FPGA after reconnects, mode
+        # changes, resets, or power cycles.
+        if not self.send("p"):
+            return
+        self.send(f"c {self.bins_spin.value()} {self._requested_dwell_cycles()}")
+        self.configured_signature = requested_signature
+        self.acquisition_running = False
+        self._show_status(
+            f"Configuring FPGA: {self.bins_spin.value():,} bins × "
+            f"{self._requested_dwell_cycles():,} clocks before Start…"
+        )
+        QTimer.singleShot(300, finish_mcs_internal_start)
 
     def _internal_signal_changed(self, enabled):
         if self.worker is not None:
@@ -2676,26 +2604,38 @@ class OpenMCSWindow(QMainWindow):
         requested_signature = (
             self.bins_spin.value(), self._requested_dwell_cycles()
         )
-        if self.configured_signature != requested_signature:
-            self._show_status(
-                "Apply the displayed MCS configuration before external run",
-                "warning",
-            )
-            return
         max_passes = 0 if self.unlimited_passes_check.isChecked() else self.max_passes_spin.value()
-        if self.send(f"m {max_passes}"):
-            self.send("e")
-            self.acquisition_running = True
-            baseline_passes = int(self.accumulation_frames)
-            self._begin_acquisition_timing(
-                None if max_passes == 0 else max_passes,
-                baseline_passes=baseline_passes
-            )
-            limit_text = "continuous" if max_passes == 0 else f"target {max_passes:,} total passes"
-            self._show_status(
-                f"FPGA armed for external triggers · {limit_text}",
-                "success"
-            )
+        baseline_passes = int(self.accumulation_frames)
+
+        def finish_mcs_external_start():
+            if self.instrument_mode != "mcs" or self.worker is None:
+                return
+            self.send(f"m {max_passes}")
+            if self.send("e"):
+                self.acquisition_running = True
+                self._begin_acquisition_timing(
+                    None if max_passes == 0 else max_passes,
+                    baseline_passes=baseline_passes
+                )
+                limit_text = "continuous" if max_passes == 0 else f"target {max_passes:,} total passes"
+                self._show_status(
+                    f"FPGA armed for external triggers · {limit_text} · "
+                    f"{self.bins_spin.value():,} bins × {self._requested_dwell_cycles():,} clocks",
+                    "success"
+                )
+
+        # ALWAYS program the geometry shown in Setup before every external Start.
+        # configured_signature is only a GUI cache and is not authoritative FPGA state.
+        if not self.send("p"):
+            return
+        self.send(f"c {self.bins_spin.value()} {self._requested_dwell_cycles()}")
+        self.configured_signature = requested_signature
+        self.acquisition_running = False
+        self._show_status(
+            f"Configuring FPGA: {self.bins_spin.value():,} bins × "
+            f"{self._requested_dwell_cycles():,} clocks before external Start…"
+        )
+        QTimer.singleShot(300, finish_mcs_external_start)
 
     def single_trigger(self):
         if self.send("t"):
@@ -2767,6 +2707,7 @@ class OpenMCSWindow(QMainWindow):
         self._set_shared_self_test(enabled, self.counter_self_test_check)
 
     def _mode_changed(self):
+        self._cancel_live_preview()
         counter = self.instrument_mode == "counter"
         self_test = self.self_test_check.isChecked()
         self.x_axis_combo.setEnabled(not counter)
@@ -3944,6 +3885,7 @@ class OpenMCSWindow(QMainWindow):
         )
 
     def reset_histogram(self, _checked=False, silent=False):
+        self._cancel_live_preview()
         if not silent:
             self.send("z")
         if self.instrument_mode == "mcs":
@@ -3993,6 +3935,47 @@ class OpenMCSWindow(QMainWindow):
         if not silent:
             self._show_status("FPGA accumulation clear requested", "success")
 
+    def _cancel_live_preview(self):
+        self.live_preview_timer.stop()
+        self._live_preview_metadata = None
+        self._live_preview_warning = False
+
+    def _render_live_preview(self):
+        metadata = self._live_preview_metadata
+        warning = self._live_preview_warning
+        self._live_preview_metadata = None
+        self._live_preview_warning = False
+        if (metadata is None or self.instrument_mode != "mcs" or
+                self.mcs_clear_pending or self.mcs_display_frozen or
+                self.latest_counts is None):
+            return
+        self._update_mcs_time_axis(metadata)
+        self._set_region_bounds(int(metadata["bin_count"]))
+        x_values = self._mcs_x_values(np.arange(int(metadata["bin_count"])), metadata)
+        step_x, step_y = histogram_step_xy(x_values, self.latest_counts)
+        self.curve.setData(step_x, step_y)
+        self._update_live_manual_autorange()
+        self._initialize_mcs_view_once(x_values, self.latest_counts)
+        self._update_overview_data(x_values, self.latest_counts)
+        self.plot_title.setText(
+            "Histogram"
+        )
+        self.status_frame_kind.setText(
+            f"LIVE · pass {int(metadata['pass_count']):,} · bins "
+            f"{int(metadata['block_start']):,}–"
+            f"{int(metadata['block_start']) + int(metadata['block_count']) - 1:,}"
+        )
+        self._update_roi_metrics()
+        self._update_highlighted_section()
+        self.save_csv_button.setEnabled(True)
+        self.save_plot_button.setEnabled(True)
+        self.reset_button.setEnabled(True)
+        self._show_status(
+            "Live display fell behind; acquisition is intact and the completed final frame will resynchronize it"
+            if warning else "Live preview updated",
+            "warning" if warning else "success",
+        )
+
     def handle_frame(self, counts, metadata):
         self.pass_number += 1
         if not metadata["total_ok"]:
@@ -4017,6 +4000,10 @@ class OpenMCSWindow(QMainWindow):
             if metadata.get("live_block") or not metadata.get("atomic_final"):
                 return
 
+        if not metadata.get("live_block"):
+            # Full frames, including the authoritative final frame, paint now.
+            self._cancel_live_preview()
+
         if metadata.get("live_block"):
             # MCB1 contains absolute FPGA BRAM values for one committed range.
             # Merge those values directly; never add them, because the BRAM is
@@ -4032,8 +4019,9 @@ class OpenMCSWindow(QMainWindow):
                     self.mcs_latest_counts.size != total_bins or
                     self.accumulation_signature != signature):
                 self.mcs_latest_counts = np.zeros(total_bins, dtype=np.uint64)
-            self.mcs_latest_counts[start:start + length] = counts.astype(np.uint64)
-            self.latest_counts = self.mcs_latest_counts.copy()
+                self.latest_counts = np.zeros(total_bins, dtype=np.uint64)
+            self.mcs_latest_counts[start:start + length] = counts
+            self.latest_counts[start:start + length] = counts
             self.accumulation_signature = signature
             self.configured_signature = (total_bins, metadata["dwell_cycles"])
             display_metadata = metadata.copy()
@@ -4041,36 +4029,10 @@ class OpenMCSWindow(QMainWindow):
             self.latest_metadata = display_metadata
             self.mcs_latest_metadata = display_metadata.copy()
 
-            self._update_mcs_time_axis(display_metadata)
-            self._set_region_bounds(total_bins)
-            x_values = self._mcs_x_values(np.arange(total_bins), display_metadata)
-            step_x, step_y = histogram_step_xy(x_values, self.latest_counts)
-            self.curve.setData(step_x, step_y)
-            self._update_live_manual_autorange()
-            self._initialize_mcs_view_once(x_values, self.latest_counts)
-            self._update_overview_data(x_values, self.latest_counts)
-            self.plot_title.setText(
-                "Histogram"
-            )
-            self.status_frame_kind.setText(
-                f"LIVE · pass {int(metadata['pass_count']):,} · bins "
-                f"{start:,}–{start + length - 1:,}"
-            )
-            self._update_roi_metrics()
-            self._update_highlighted_section()
-            self.save_csv_button.setEnabled(True)
-            self.save_plot_button.setEnabled(True)
-            self.reset_button.setEnabled(True)
-            if metadata.get("live_stream_overflow"):
-                self._show_status(
-                    "Live display fell behind; acquisition is intact and the completed final frame will resynchronize it",
-                    "warning",
-                )
-            else:
-                self._show_status(
-                    "Live preview updated",
-                    "success",
-                )
+            self._live_preview_metadata = metadata.copy()
+            self._live_preview_warning |= bool(metadata.get("live_stream_overflow"))
+            if not self.live_preview_timer.isActive():
+                self.live_preview_timer.start()
             return
 
         if self.instrument_mode == "counter":

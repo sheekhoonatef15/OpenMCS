@@ -1,13 +1,5 @@
 // OpenMCS Production V3.3 -- trigger-anchored live histogram streaming
-//
-// The tested V2.3 synchronizers, dwell timing, UART protocol, and single-port
-// Up to 16,384 x 32-bit accumulated histogram BSRAM is provided. Completed bins are
-// queued in a 16-entry register FIFO, decoupling acquisition boundaries from
-// histogram read/modify/write latency. Bin changes occur on exact 100 MHz
-// boundaries. Triggers received during an active pass are ignored and are
-// never queued or deferred; the next pass requires a new trigger while armed.
-// The FIFO head is explicitly registered and dwell timing uses a down-counter
-// so the two main acquisition-domain critical paths remain short at 100 MHz.
+
 
 module mcs_step8 #(
     parameter integer ACQ_CLOCK_HZ = 100_000_000,
